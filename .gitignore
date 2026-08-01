@@ -1,0 +1,8 @@
+.uploads/
+.trae/
+dancing-line.zip
+dancing-line-offline/
+dancing-line-offline.html
+*.py
+__pycache__/
+*.level.json
