@@ -578,7 +578,8 @@ function generateDemoLevel(songKey,duration){
 
 /* ===== Sim (v3: 无分数, Toggle 交替) ===== */
 const Sim={
-  level:null,designPath:null,activeRoute:null,playerTurns:[],playerPath:null,
+  level:null,designPath:null,activeRoute:null,allDesignPaths:[],currentRoute:null,
+  playerTurns:[],playerPath:null,
   alive:true,autoplay:false,completed:false,
   prevHead:null,head:null,dir:null,particles:[],
   checkpoint:0,collectedDiamonds:new Set(),crownCollected:false,
@@ -587,6 +588,12 @@ const Sim={
     this.autoplay=!!autoplay;
     this.activeRoute=this.level.routes.find(r=>r.id===activeRouteId)||this.level.routes[0];
     this.designPath=buildRoutePath(this.activeRoute,this.level.play.speed,this.level.audio.leadInSec);
+    // 预计算所有路线的 designPath, 用于多路线碰撞检测
+    this.allDesignPaths=this.level.routes.map(r=>({
+      route:r,
+      path:buildRoutePath(r,this.level.play.speed,this.level.audio.leadInSec)
+    }));
+    this.currentRoute=this.activeRoute;
     this.playerTurns=[];
     this._rebuildPlayer();
     this.alive=true;this.completed=false;
@@ -599,7 +606,11 @@ const Sim={
   setActiveRoute(routeId){
     if(!this.level)return;
     const r=this.level.routes.find(x=>x.id===routeId);
-    if(r){this.activeRoute=r;this.designPath=buildRoutePath(r,this.level.play.speed,this.level.audio.leadInSec);
+    if(r){this.activeRoute=r;this.currentRoute=r;this.designPath=buildRoutePath(r,this.level.play.speed,this.level.audio.leadInSec);
+      this.allDesignPaths=this.level.routes.map(rt=>({
+        route:rt,
+        path:buildRoutePath(rt,this.level.play.speed,this.level.audio.leadInSec)
+      }));
       this._rebuildPlayer();this.prevHead=this.designPath.prefix[0].slice();
       this.head=this.designPath.prefix[0].slice();this.dir=this.designPath.dirA;}
   },
@@ -613,7 +624,11 @@ const Sim={
       const dt=nodeTimes[i+1]-nodeTimes[i];
       prefix.push([prefix[i][0]+segDirs[i][0]*speed*dt,prefix[i][1]+segDirs[i][1]*speed*dt]);
     }
-    const widths=dp.widths.slice(0,prefix.length);
+    // 使用当前路线的宽度, 若未确定则用活动路线宽度
+    const cr=this.currentRoute||this.activeRoute;
+    const crPath=this.allDesignPaths.find(e=>e.route.id===cr.id);
+    const widthSource=(crPath&&crPath.path.widths)||dp.widths;
+    const widths=widthSource.slice(0,prefix.length);
     while(widths.length<prefix.length)widths.push(widths[widths.length-1]);
     this.playerPath={nodeTimes,segDirs,prefix,widths,dirA:dp.dirA,dirB:dp.dirB};
   },
@@ -646,26 +661,34 @@ const Sim={
     const progress=dur?clamp(Math.max(T,mt)/dur,0,1):0;
     return{head:s.head,dir:s.dir,trail,alive:this.alive,completed:this.completed,
       progress,turnCount:this.playerTurns.length,autoplay:this.autoplay,T,idx:s.idx,
-      widths:path.widths,dirA:path.dirA,dirB:path.dirB,routeColor:this.activeRoute.color};
+      widths:path.widths,dirA:path.dirA,dirB:path.dirB,routeColor:(this.currentRoute||this.activeRoute).color};
   },
   onTurn(T){
     if(!this.alive||this.autoplay)return false;
     if(T<0)return false;
-    this.playerTurns.push({t:T,w:this.activeRoute.widths?.[this.playerTurns.length+1]||this.level.play.halfWidth});
+    const cr=this.currentRoute||this.activeRoute;
+    this.playerTurns.push({t:T,w:cr.widths?.[this.playerTurns.length+1]||this.level.play.halfWidth});
     this._rebuildPlayer();
     return true;
   },
   checkCollision(T){
     if(!this.alive||this.autoplay)return false;
     const ps=this._sample(this.playerPath,T);
-    const ds=this._sample(this.designPath,T);
-    const dist=Math.hypot(ps.head[0]-ds.head[0],ps.head[1]-ds.head[1]);
-    const segHalf=Math.max(this.designPath.widths[ds.idx]||0,this.designPath.widths[ds.idx+1]||0);
-    // 宽松判定: 碰撞箱完全在路线外部才算失败 (碰撞箱半径 = segHalf + collisionMargin)
-    // 只有当玩家偏离距离 > segHalf + collisionMargin 时才判定碰撞
-    // collisionMargin 已增大, 给玩家更大容错空间
-    const tol=segHalf+Config.collisionMargin;
-    return dist>tol;
+    // 多路线模式: 检查玩家是否在任意一条路线上
+    let minDist=Infinity,closestRoute=null;
+    for(const entry of this.allDesignPaths){
+      const ds=this._sample(entry.path,T);
+      const dist=Math.hypot(ps.head[0]-ds.head[0],ps.head[1]-ds.head[1]);
+      const segHalf=Math.max(entry.path.widths[ds.idx]||0,entry.path.widths[ds.idx+1]||0);
+      const tol=segHalf+Config.collisionMargin;
+      if(dist<=tol&&dist<minDist){minDist=dist;closestRoute=entry.route;}
+    }
+    if(closestRoute){
+      // 玩家在某条路线上, 更新当前路线 (用于颜色和宽度)
+      this.currentRoute=closestRoute;
+      return false;
+    }
+    return true;
   },
   spawnParticles(x,y,color,n){for(let i=0;i<n;i++){const a=Math.random()*Math.PI*2,sp=40+Math.random()*180;this.particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:0.6+Math.random()*0.4,max:1,color});}},
   updateParticles(dt){for(let i=this.particles.length-1;i>=0;i--){const p=this.particles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=0.92;p.vy*=0.92;p.life-=dt;if(p.life<=0)this.particles.splice(i,1);}},
@@ -681,13 +704,15 @@ const Sim={
         }
       }
     }
-    // 钻石: 玩家路径接近设计路径上的钻石位置时收集
+    // 钻石: 玩家路径接近当前路线上的钻石位置时收集
     if(col.diamonds&&col.diamonds.length>0){
-      const ds=this._sample(this.designPath,T);
+      const cr=this.currentRoute||this.activeRoute;
+      const crEntry=this.allDesignPaths.find(e=>e.route.id===cr.id);
+      const dp=crEntry?crEntry.path:this.designPath;
+      const ds=this._sample(dp,T);
       for(const d of col.diamonds){
         if(this.collectedDiamonds.has(d.t))continue;
         if(Math.abs(T-d.t)<0.15){
-          const dp=this.designPath;
           const dIdx=Math.min(dp.prefix.length-1,dp.nodeTimes.findIndex(nt=>nt>=d.t));
           if(dIdx<0)continue;
           const dx=dp.prefix[dIdx][0]-ds.head[0];
@@ -702,7 +727,10 @@ const Sim={
     // 皇冠: 到达终点附近时收集
     if(col.crown&&!this.crownCollected&&T>=col.crown.t-0.3&&T<=col.crown.t+0.5){
       this.crownCollected=true;result.crown=col.crown.t;
-      const ds=this._sample(this.designPath,T);
+      const cr=this.currentRoute||this.activeRoute;
+      const crEntry=this.allDesignPaths.find(e=>e.route.id===cr.id);
+      const dp=crEntry?crEntry.path:this.designPath;
+      const ds=this._sample(dp,T);
       this.spawnParticles(ds.head[0],ds.head[1],'#ffd700',20);
     }
     return result;
@@ -783,13 +811,11 @@ const Renderer={
       // 活动路线用正常亮度和自身颜色
       if(Sim.designPath)this._drawDesignPath(Sim.designPath,false,Sim.activeRoute.color);
     }else if(mode==='play'&&Sim.level&&Sim.level.routes.length>1){
-      // 游戏模式: 非活动路线用半透明引导, 活动路线用幽灵显示
+      // 游戏模式: 所有路线等亮度显示, 玩家可走任意一条
       for(const route of Sim.level.routes){
-        if(route.id===Sim.activeRoute.id)continue;
         const path=buildRoutePath(route,Sim.level.play.speed,Sim.level.audio.leadInSec);
-        this._drawRoad(path.prefix,path.widths,route.color||'#888',0.35,false);
+        this._drawRoad(path.prefix,path.widths,route.color||'#888',0.3,false);
       }
-      if(Sim.designPath)this._drawDesignPath(Sim.designPath,true,Sim.activeRoute.color);
     }else if((mode==='editor'||mode==='play')&&Sim.designPath){
       this._drawDesignPath(Sim.designPath,mode==='play',Sim.activeRoute?Sim.activeRoute.color:null);
     }
@@ -875,7 +901,10 @@ const Renderer={
   _drawCollectibles(T_play,mode){
     if(!Sim.level||!Sim.level.collectibles)return;
     const col=Sim.level.collectibles;
-    const dp=Sim.designPath;if(!dp)return;
+    // 使用当前路线的 designPath 来定位收集物
+    const cr=Sim.currentRoute||Sim.activeRoute;
+    const crEntry=Sim.allDesignPaths.find(e=>e.route.id===cr.id);
+    const dp=crEntry?crEntry.path:Sim.designPath;if(!dp)return;
     const ctx=this.ctx,z=Config.zoom;
     ctx.save();
     // 存档点: 绿色旗帜
@@ -943,8 +972,12 @@ const Renderer={
     ctx.globalAlpha=1;ctx.restore();
   },
   _drawGuide(snap){
-    if(!Sim.designPath)return;
-    const dp=Sim.designPath,idx=snap.idx;
+    // 使用当前路线的 designPath
+    const cr=Sim.currentRoute||Sim.activeRoute;
+    const crEntry=Sim.allDesignPaths.find(e=>e.route.id===cr.id);
+    const dp=crEntry?crEntry.path:Sim.designPath;
+    if(!dp)return;
+    const idx=snap.idx;
     const ctx=this.ctx;ctx.save();
     const z=Config.zoom,m=80;
     // 预计算屏幕坐标
@@ -1068,12 +1101,8 @@ const UI={
       div.innerHTML=`<div><div class="nm">${key}</div><div class="meta">钢琴曲 · 点击${forEditor?'进入编辑':'开始游玩'}${routeInfo}</div></div><span class="diff normal">normal</span>`;
       div.onclick=()=>{
         if(forEditor){Editor.enter(key);return;}
-        // 如果有多条路线, 显示路线选择
-        if(routeCount>1&&levelData){
-          this._showRouteSelect(key,levelData.routes);
-        }else{
-          this.openSongForPlay(key);
-        }
+        // 游玩模式: 所有路线同时显示, 直接开始
+        this.openSongForPlay(key);
       };
       ss.appendChild(div);
     });
