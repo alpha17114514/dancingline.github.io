@@ -297,11 +297,27 @@ const AudioEngine={
           const res=await fetch(m.src);if(!res.ok)throw new Error('fetch '+res.status);
           arr=await res.arrayBuffer();
         }catch(e2){
-          throw new Error('音频加载失败: '+songKey+' (离线版请用单文件版)');
+          throw new Error('音频文件获取失败: '+songKey);
         }
       }
-      this.buffer=await this.ctx.decodeAudioData(arr);
-      this.duration=this.buffer.duration;this.peaks=this.computePeaks(this.buffer);this.songKey=songKey;
+      // decodeAudioData 重试: 某些浏览器在 ctx 未完全就绪时会失败
+      let lastErr;
+      for(let attempt=0;attempt<3;attempt++){
+        try{
+          // 确保 ctx 处于运行状态
+          if(this.ctx.state==='suspended'){await this.ctx.resume();}
+          // 使用 slice 创建副本, 避免 decodeAudioData 消费 ArrayBuffer 后无法重试
+          this.buffer=await this.ctx.decodeAudioData(arr.slice(0));
+          this.duration=this.buffer.duration;this.peaks=this.computePeaks(this.buffer);this.songKey=songKey;
+          return this.buffer;
+        }catch(e){
+          lastErr=e;
+          console.warn('decodeAudioData attempt '+(attempt+1)+' failed for '+songKey+': '+e.message);
+          // 等待 100ms 后重试
+          if(attempt<2)await new Promise(r=>setTimeout(r,100));
+        }
+      }
+      throw new Error('音频解码失败: '+songKey+' ('+(lastErr?lastErr.message:'unknown')+')');
     }
     return this.buffer;
   },
@@ -1026,7 +1042,7 @@ const Game={
     if(mcr)mcr.onclick=()=>{Editor._setMode('crown');};
   },
   async startPlay(songKey,fromEditor,autoplay){
-    AudioEngine.resumeCtx();this.mode='play';this.showGuide=true;
+    await AudioEngine.resumeCtx();this.mode='play';this.showGuide=true;
     Play.state='idle';
     document.getElementById('menu').classList.add('hidden');
     document.getElementById('song-name').textContent=songKey;
@@ -1044,7 +1060,7 @@ const Game={
         }
       }
       await AudioEngine.load(songKey);
-    }catch(e){toast('音频加载失败，请重试');console.error(e);UI.showMenu();return;}
+    }catch(e){console.error('startPlay error:',e);toast(e.message||'音频加载失败，请重试');UI.showMenu();return;}
     level.meta.durationSec=AudioEngine.duration;
     Sim.reset(level,autoplay);this._autoplay=autoplay;
     Play.leadIn=level.audio.leadInSec||3.0;
