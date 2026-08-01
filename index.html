@@ -104,7 +104,8 @@
 
   #toast{position:absolute;z-index:30;bottom:150px;left:50%;transform:translateX(-50%);
     background:rgba(8,10,20,.92);border:1px solid var(--violet);color:var(--fg);padding:10px 18px;
-    border-radius:4px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none}
+    border-radius:4px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;
+    max-width:90vw;white-space:pre-wrap;text-align:center;line-height:1.5}
   #toast.show{opacity:1}
   .hint{position:absolute;z-index:6;bottom:18px;left:50%;transform:translateX(-50%);
     color:var(--muted);font-size:13px;letter-spacing:.06em;pointer-events:none;text-align:center}
@@ -343,62 +344,58 @@ const AudioEngine={
       this._cleanupMedia();
       const m=AudioManifest[songKey];if(!m)throw new Error('未知曲目 '+songKey);
       const relUrl=encodeURI(m.src);
-      // 构造绝对 URL (用于重试时排除相对路径解析问题)
       let absUrl='';
       try{absUrl=new URL(relUrl,location.href).href;}catch(e){}
       let arr;
-      // 第一步: 尝试 XHR 加载 (带重试, SSL 错误可能是暂时的)
-      let xhrErr;
-      for(let attempt=0;attempt<3;attempt++){
+      // 第一步: 尝试 XHR 加载 (1次, 避免过多请求加重 SSL 问题)
+      let loadErr=null;
+      try{
+        arr=await new Promise((resolve,reject)=>{
+          const xhr=new XMLHttpRequest();
+          xhr.open('GET',relUrl,true);
+          xhr.responseType='arraybuffer';
+          xhr.timeout=30000;
+          xhr.onload=()=>{if(xhr.status===200||xhr.status===0)resolve(xhr.response);else reject(new Error('XHR '+xhr.status));};
+          xhr.onerror=()=>reject(new Error('网络错误'));
+          xhr.ontimeout=()=>reject(new Error('请求超时 (30s)'));
+          xhr.send();
+        });
+      }catch(e){loadErr=e;console.warn('XHR failed for '+songKey+': '+e.message);}
+      // 第二步: XHR 失败, 尝试 fetch (1次, 延迟1秒避免连续请求)
+      if(loadErr){
+        await new Promise(r=>setTimeout(r,1000));
         try{
-          const tryUrl=attempt===0?relUrl:(attempt===1?absUrl:relUrl);
-          arr=await new Promise((resolve,reject)=>{
-            const xhr=new XMLHttpRequest();
-            xhr.open('GET',tryUrl,true);
-            xhr.responseType='arraybuffer';
-            xhr.timeout=30000;
-            xhr.onload=()=>{if(xhr.status===200||xhr.status===0)resolve(xhr.response);else reject(new Error('XHR '+xhr.status));};
-            xhr.onerror=()=>reject(new Error('XHR network error'));
-            xhr.ontimeout=()=>reject(new Error('XHR timeout (30s)'));
-            xhr.send();
-          });
-          xhrErr=null;break;
-        }catch(e){xhrErr=e;console.warn('XHR attempt '+(attempt+1)+' failed for '+songKey+': '+e.message);if(attempt<2)await new Promise(r=>setTimeout(r,500*(attempt+1)));}
+          const res=await fetch(absUrl||relUrl);if(!res.ok)throw new Error('fetch '+res.status);
+          arr=await res.arrayBuffer();loadErr=null;
+        }catch(e){console.warn('Fetch failed for '+songKey+': '+e.message);}
       }
-      if(xhrErr){
-        // 第二步: 尝试 fetch (带重试)
-        let fetchErr;
-        for(let attempt=0;attempt<2;attempt++){
-          try{
-            const tryUrl=attempt===0?relUrl:absUrl;
-            const res=await fetch(tryUrl);if(!res.ok)throw new Error('fetch '+res.status);
-            arr=await res.arrayBuffer();fetchErr=null;break;
-          }catch(e){fetchErr=e;console.warn('Fetch attempt '+(attempt+1)+' failed for '+songKey+': '+e.message);if(attempt<1)await new Promise(r=>setTimeout(r,500));}
-        }
-        if(fetchErr){
-          console.warn('XHR and fetch all failed for '+songKey+', trying media element...');
-          // 第三步: 使用 <audio> 元素加载 (SSL/网络错误的后备方案, 带重试)
-          let mediaErr;
-          for(let attempt=0;attempt<3;attempt++){
-            try{
-              const tryUrl=attempt===0?relUrl:(attempt===1?absUrl:relUrl);
-              await this._loadViaMediaElement(songKey,tryUrl);
-              mediaErr=null;break;
-            }catch(e){mediaErr=e;console.warn('Media element attempt '+(attempt+1)+' failed for '+songKey+': '+e.message);this._cleanupMedia();if(attempt<2)await new Promise(r=>setTimeout(r,800*(attempt+1)));}
-          }
-          if(mediaErr){
-            // 检测是否是 SSL 错误
-            const isSSL=location.protocol==='https:';
-            const hint=isSSL?' (HTTPS 站点 SSL 连接失败, 请检查服务器证书配置, 或尝试使用本地服务器运行)':
-              (location.protocol==='file:'?' (直接打开HTML文件时无法加载音频, 请使用本地服务器或下载离线版ZIP)':'');
-            throw new Error('音频加载失败: '+songKey+' ('+mediaErr.message+')'+hint);
-          }
+      // 第三步: fetch 也失败, 尝试 media element (1次, 延迟1秒)
+      if(loadErr){
+        await new Promise(r=>setTimeout(r,1000));
+        console.warn('XHR and fetch failed for '+songKey+', trying media element...');
+        try{
+          await this._loadViaMediaElement(songKey,absUrl||relUrl);
           return this.buffer;
+        }catch(e){
+          loadErr=e;console.warn('Media element failed for '+songKey+': '+e.message);this._cleanupMedia();
         }
       }
-      // 第四步: decodeAudioData 解码 (带重试)
+      // 所有方法都失败
+      if(loadErr){
+        const proto=location.protocol;
+        let hint;
+        if(proto==='https:'){
+          hint='音频加载失败 (SSL连接错误)\n建议: 1.刷新页面重试 2.点击主菜单"下载离线版"本地运行';
+        }else if(proto==='file:'){
+          hint='音频加载失败\n建议: 使用本地服务器运行, 或点击主菜单"下载离线版"';
+        }else{
+          hint='音频加载失败 ('+loadErr.message+')\n建议: 刷新页面重试, 或下载离线版';
+        }
+        throw new Error(hint);
+      }
+      // 第四步: decodeAudioData 解码 (带1次重试)
       let lastErr;
-      for(let attempt=0;attempt<3;attempt++){
+      for(let attempt=0;attempt<2;attempt++){
         try{
           if(this.ctx.state==='suspended'){await this.ctx.resume();}
           this.buffer=await this.ctx.decodeAudioData(arr.slice(0));
@@ -407,11 +404,11 @@ const AudioEngine={
         }catch(e){
           lastErr=e;
           console.warn('decodeAudioData attempt '+(attempt+1)+' failed for '+songKey+': '+e.message);
-          if(attempt<2)await new Promise(r=>setTimeout(r,100));
+          if(attempt<1)await new Promise(r=>setTimeout(r,200));
         }
       }
-      // 第五步: decodeAudioData 全部失败, 尝试 media element 后备
-      console.warn('decodeAudioData failed after retries, trying media element fallback...');
+      // 第五步: decodeAudioData 失败, 尝试 media element
+      console.warn('decodeAudioData failed, trying media element fallback...');
       try{
         await this._loadViaMediaElement(songKey,relUrl);
         return this.buffer;
@@ -1062,12 +1059,47 @@ const UI={
     document.getElementById('back-to-main').classList.remove('hidden');ss.innerHTML='';
     SONG_ORDER.forEach(key=>{
       const div=document.createElement('div');div.className='song-item';
-      div.innerHTML=`<div><div class="nm">${key}</div><div class="meta">钢琴曲 · 点击${forEditor?'进入编辑':'开始游玩'}</div></div><span class="diff normal">normal</span>`;
-      div.onclick=()=>{if(forEditor)Editor.enter(key);else UI.openSongForPlay(key);};
+      // 检查是否有多条路线
+      const saved=Store.getLevel(key);
+      const embedded=EmbeddedLevels[key];
+      const levelData=saved&&saved.routes&&saved.routes[0]&&saved.routes[0].turns.length>0?saved:embedded;
+      const routeCount=levelData?levelData.routes.length:1;
+      const routeInfo=routeCount>1?` · ${routeCount}条路线`:'';
+      div.innerHTML=`<div><div class="nm">${key}</div><div class="meta">钢琴曲 · 点击${forEditor?'进入编辑':'开始游玩'}${routeInfo}</div></div><span class="diff normal">normal</span>`;
+      div.onclick=()=>{
+        if(forEditor){Editor.enter(key);return;}
+        // 如果有多条路线, 显示路线选择
+        if(routeCount>1&&levelData){
+          this._showRouteSelect(key,levelData.routes);
+        }else{
+          this.openSongForPlay(key);
+        }
+      };
       ss.appendChild(div);
     });
   },
-  openSongForPlay(key){Game.pendingSong=key;document.getElementById('menu').classList.add('hidden');Game.startPlay(key,false);},
+  _showRouteSelect(songKey,routes){
+    const ss=document.getElementById('song-select');
+    ss.innerHTML='';
+    // 返回按钮
+    const back=document.createElement('div');back.className='song-item';back.style.cursor='pointer';
+    back.innerHTML='<div><div class="nm">← 返回歌曲列表</div></div>';
+    back.onclick=()=>this.showSongSelect(false);
+    ss.appendChild(back);
+    // 标题
+    const title=document.createElement('div');title.className='song-item';title.style.cursor='default';title.style.opacity='0.6';
+    title.innerHTML=`<div><div class="nm">${songKey} - 选择路线</div></div>`;
+    ss.appendChild(title);
+    // 路线列表
+    routes.forEach((r,i)=>{
+      const div=document.createElement('div');div.className='song-item';
+      const turnCount=r.turns?r.turns.length:0;
+      div.innerHTML=`<div><div class="nm" style="color:${r.color}">路线 ${i+1}: ${r.name||r.id}</div><div class="meta">${turnCount}个转点 · 宽度${r.widths?(r.widths[1]||r.widths[0]||18):18}</div></div><span class="diff normal">normal</span>`;
+      div.onclick=()=>{this.openSongForPlay(songKey,r.id);};
+      ss.appendChild(div);
+    });
+  },
+  openSongForPlay(key,routeId){Game.pendingSong=key;document.getElementById('menu').classList.add('hidden');Game.startPlay(key,false,false,routeId);},
   refreshHud(snap){
     document.getElementById('progress-fill').style.width=(snap.progress*100)+'%';
     // 显示收集物计数
@@ -1187,7 +1219,7 @@ const Game={
     const mcr=document.getElementById('mode-crown');
     if(mcr)mcr.onclick=()=>{Editor._setMode('crown');};
   },
-  async startPlay(songKey,fromEditor,autoplay){
+  async startPlay(songKey,fromEditor,autoplay,routeId){
     await AudioEngine.resumeCtx();this.mode='play';this.showGuide=true;
     Play.state='idle';
     document.getElementById('menu').classList.add('hidden');
@@ -1206,9 +1238,10 @@ const Game={
         }
       }
       await AudioEngine.load(songKey);
-    }catch(e){console.error('startPlay error:',e);toast(e.message||'音频加载失败，请重试',5000);UI.showMenu();return;}
+    }catch(e){console.error('startPlay error:',e);toast(e.message||'音频加载失败，请重试',8000);UI.showMenu();return;}
     level.meta.durationSec=AudioEngine.duration;
-    Sim.reset(level,autoplay);this._autoplay=autoplay;
+    this._currentRouteId=routeId||null;
+    Sim.reset(level,autoplay,routeId);this._autoplay=autoplay;
     Play.leadIn=level.audio.leadInSec||3.0;
     Play.audioOffset=level.audio.audioOffset||0;
     Play.ready();
@@ -1380,8 +1413,9 @@ const Play={
   restart(){
     document.getElementById('pause').classList.add('hidden');
     document.getElementById('result').classList.add('hidden');
-    if(Game._editorReturn)Game.startPlay(Sim.level.meta.songKey,true,false);
-    else Game.startPlay(Sim.level.meta.songKey,false,false);
+    const rid=Game._currentRouteId||null;
+    if(Game._editorReturn)Game.startPlay(Sim.level.meta.songKey,true,false,rid);
+    else Game.startPlay(Sim.level.meta.songKey,false,false,rid);
   },
   revive(){
     document.getElementById('result').classList.add('hidden');
@@ -1703,7 +1737,7 @@ const Editor={
     document.getElementById('timeline').style.display='none';
     document.getElementById('stage').classList.remove('editor-canvas-offset');
     Renderer.resize();
-    Game._editorReturn=true;Game.startPlay(this.songKey,true,false);
+    Game._editorReturn=true;Game.startPlay(this.songKey,true,false,this.activeRouteId||null);
   },
   returnFromTest(){
     Game.mode='editor';Game._editorReturn=false;
