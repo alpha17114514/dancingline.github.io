@@ -189,6 +189,7 @@
     <label>路宽 <input type="range" id="f-width" min="6" max="100" step="1" value="18" style="width:90px;vertical-align:middle"></label>
     <div id="route-tools" style="display:flex;gap:4px;align-items:center;margin-top:4px">
       <select id="route-select" style="background:rgba(20,26,46,.7);border:1px solid var(--line);color:var(--fg);font-size:12px;padding:2px"></select>
+      <input type="color" id="route-color" value="#22e1ff" title="路线颜色" style="width:28px;height:24px;border:1px solid var(--line);background:transparent;cursor:pointer;padding:0">
       <button class="ed-btn" id="route-add" style="padding:3px 8px;font-size:11px">+路线</button>
       <button class="ed-btn danger" id="route-del" style="padding:3px 8px;font-size:11px">删</button>
     </div>
@@ -637,8 +638,16 @@ const Renderer={
       }
       // 活动路线用正常亮度和自身颜色
       if(Sim.designPath)this._drawDesignPath(Sim.designPath,false,Sim.activeRoute.color);
+    }else if(mode==='play'&&Sim.level&&Sim.level.routes.length>1){
+      // 游戏模式: 非活动路线用半透明引导, 活动路线用幽灵显示
+      for(const route of Sim.level.routes){
+        if(route.id===Sim.activeRoute.id)continue;
+        const path=buildRoutePath(route,Sim.level.play.speed,Sim.level.audio.leadInSec);
+        this._drawRoad(path.prefix,path.widths,route.color||'#888',0.35,false);
+      }
+      if(Sim.designPath)this._drawDesignPath(Sim.designPath,true,Sim.activeRoute.color);
     }else if((mode==='editor'||mode==='play')&&Sim.designPath){
-      this._drawDesignPath(Sim.designPath,mode==='play');
+      this._drawDesignPath(Sim.designPath,mode==='play',Sim.activeRoute?Sim.activeRoute.color:null);
     }
     // 引导线（仅游戏模式）
     if(mode==='play'&&Game.showGuide&&snap){
@@ -972,7 +981,15 @@ const Game={
     };
     // 路线选择
     const rs=document.getElementById('route-select');
-    if(rs)rs.onchange=()=>{Editor.activeRouteId=rs.value;Sim.setActiveRoute(rs.value);Editor._updateStats();};
+    if(rs)rs.onchange=()=>{Editor.activeRouteId=rs.value;Sim.setActiveRoute(rs.value);Editor._updateStats();Editor._refreshRouteColor();};
+    // 路线颜色
+    const rc=document.getElementById('route-color');
+    if(rc)rc.oninput=()=>{
+      const r=Editor._activeRoute();if(!r)return;
+      r.color=rc.value;
+      if(Sim.activeRoute)Sim.activeRoute.color=rc.value;
+      Editor._markDirty();
+    };
     // 路线增删
     const ra=document.getElementById('route-add');
     if(ra)ra.onclick=()=>{
@@ -982,7 +999,7 @@ const Game={
       Editor.level.routes.push(nr);
       Editor.activeRouteId=nid;
       Sim.setActiveRoute(nid);
-      Editor._refreshRouteSelect();Editor._updateStats();Editor._markDirty();
+      Editor._refreshRouteSelect();Editor._updateStats();Editor._refreshRouteColor();Editor._markDirty();
       toast('已添加路线');
     };
     const rd=document.getElementById('route-del');
@@ -991,7 +1008,7 @@ const Game={
       Editor.level.routes=Editor.level.routes.filter(r=>r.id!==Editor.activeRouteId);
       Editor.activeRouteId=Editor.level.routes[0].id;
       Sim.setActiveRoute(Editor.activeRouteId);
-      Editor._refreshRouteSelect();Editor._updateStats();Editor._markDirty();
+      Editor._refreshRouteSelect();Editor._updateStats();Editor._refreshRouteColor();Editor._markDirty();
       toast('已删除路线');
     };
     // 模式切换
@@ -1324,6 +1341,11 @@ const Editor={
     this.level.routes.forEach((r,i)=>{const o=document.createElement('option');o.value=r.id;
       o.textContent=(r.name||('路线 '+r.id))+(i===0?' (主)':'')+' · '+r.turns.length+'点';sel.appendChild(o);});
     sel.value=this.activeRouteId;
+    this._refreshRouteColor();
+  },
+  _refreshRouteColor(){
+    const ci=document.getElementById('route-color');if(!ci)return;
+    const r=this._activeRoute();if(r&&r.color)ci.value=r.color;
   },
   onStagePointer(e){
     if(this.dragMode)return;
