@@ -850,14 +850,8 @@ const Renderer={
     for(let y=yStart;y<this.H;y+=step){ctx.moveTo(0,y);ctx.lineTo(this.W,y);}
     ctx.stroke();
     ctx.restore();
-    // 游戏元素: 受死亡动画和旋转变换影响
+    // 游戏元素: 仅受旋转变换影响, 路径/拖尾/收集物不随死亡掉落
     ctx.save();
-    // 死亡动画变换 (掉落+缩小)
-    if(Play.state==='dying'){
-      ctx.translate(this.W/2,this.H/2+Play.deathFallY*Config.zoom);
-      ctx.scale(Play.deathScale,Play.deathScale);
-      ctx.translate(-this.W/2,-this.H/2);
-    }
     // 屏幕旋转变换
     if(Config.rotation){
       ctx.translate(this.W/2,this.H/2);
@@ -917,6 +911,22 @@ const Renderer={
       this._drawCollectibles(snap.T,mode);
     }
     ctx.globalAlpha=1;ctx.restore();
+    // 线头部: 单独受死亡动画变换影响 (掉落+缩小)
+    if(snap&&snap.head){
+      ctx.save();
+      if(Config.rotation){
+        ctx.translate(this.W/2,this.H/2);
+        ctx.rotate(Config.rotation);
+        ctx.translate(-this.W/2,-this.H/2);
+      }
+      if(Play.state==='dying'){
+        ctx.translate(this.W/2,this.H/2+Play.deathFallY*Config.zoom);
+        ctx.scale(Play.deathScale,Play.deathScale);
+        ctx.translate(-this.W/2,-this.H/2);
+      }
+      this._drawHead(snap);
+      ctx.restore();
+    }
   },
   _drawRoad(prefix,widths,color,alpha,glow,nodeTimes,gaps){
     const ctx=this.ctx;ctx.save();ctx.globalAlpha=alpha;
@@ -1134,6 +1144,8 @@ const Renderer={
       ?snap.widths.slice(0,snap.trail.length)
       :snap.trail.map(()=>Config.defaultHalfWidth);
     this._drawRoad(snap.trail,widths,snap.routeColor||Config.cyan,0.5,true);
+  },
+  _drawHead(snap){
     const ctx=this.ctx,h=this.w2s(snap.head);
     ctx.save();
     if(Renderer.bgPulse>0.04){
