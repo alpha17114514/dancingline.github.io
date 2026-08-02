@@ -833,6 +833,24 @@ const Renderer={
       this._bgGrad.addColorStop(1,'#04050a');
     }
     ctx.fillStyle=this._bgGrad;ctx.fillRect(0,0,this.W,this.H);
+    // 网格: 仅受旋转变换影响, 不受死亡动画缩放/掉落影响
+    ctx.save();
+    if(Config.rotation){
+      ctx.translate(this.W/2,this.H/2);
+      ctx.rotate(Config.rotation);
+      ctx.translate(-this.W/2,-this.H/2);
+    }
+    const z=Config.zoom;
+    const sx0=(0-this.cam.x)*z+this.W/2,sy0=(0-this.cam.y)*z+this.H/2;
+    ctx.strokeStyle='rgba(122,134,255,0.06)';ctx.lineWidth=1;const step=64*z;
+    ctx.beginPath();
+    const xStart=sx0-Math.ceil(sx0/step)*step;
+    for(let x=xStart;x<this.W;x+=step){ctx.moveTo(x,0);ctx.lineTo(x,this.H);}
+    const yStart=sy0-Math.ceil(sy0/step)*step;
+    for(let y=yStart;y<this.H;y+=step){ctx.moveTo(0,y);ctx.lineTo(this.W,y);}
+    ctx.stroke();
+    ctx.restore();
+    // 游戏元素: 受死亡动画和旋转变换影响
     ctx.save();
     // 死亡动画变换 (掉落+缩小)
     if(Play.state==='dying'){
@@ -846,16 +864,6 @@ const Renderer={
       ctx.rotate(Config.rotation);
       ctx.translate(-this.W/2,-this.H/2);
     }
-    // 网格(仅绘制可见范围内的线)
-    const z=Config.zoom;
-    const sx0=(0-this.cam.x)*z+this.W/2,sy0=(0-this.cam.y)*z+this.H/2;
-    ctx.strokeStyle='rgba(122,134,255,0.06)';ctx.lineWidth=1;const step=64*z;
-    ctx.beginPath();
-    const xStart=sx0-Math.ceil(sx0/step)*step;
-    for(let x=xStart;x<this.W;x+=step){ctx.moveTo(x,0);ctx.lineTo(x,this.H);}
-    const yStart=sy0-Math.ceil(sy0/step)*step;
-    for(let y=yStart;y<this.H;y+=step){ctx.moveTo(0,y);ctx.lineTo(this.W,y);}
-    ctx.stroke();
     if(this.shake>0){const s=this.shake;ctx.translate((Math.random()-0.5)*s,(Math.random()-0.5)*s);this.shake*=0.86;if(this.shake<0.3)this.shake=0;}
     // 设计路径(编辑器或幽灵)
     if(mode==='editor'&&Sim.level&&Sim.level.routes.length>1){
