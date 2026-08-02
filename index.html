@@ -215,7 +215,7 @@
 
   <div id="toast"></div>
   <div id="play-hint" class="hint hidden"><span class="kbd">点击</span> 转向 · <span class="kbd">Space/Enter</span> 转向 · <span class="kbd">Esc</span> 暂停 · <span class="kbd">R</span> 重开</div>
-  <div id="edit-hint" class="hint hidden" style="bottom:140px"><span class="kbd">点击/Space</span> 铺转向点 · <span class="kbd">拖动模式</span> 平移 · <span class="kbd">💎🏁👑</span> 放收集物 · <span class="kbd">右键</span> 删点 · <span class="kbd">顶部条</span> 拖动定位 · <span class="kbd">相机模式</span> 放关键帧</div>
+  <div id="edit-hint" class="hint hidden" style="bottom:140px"><span class="kbd">点击/Space</span> 铺转向点 · <span class="kbd">拖动模式</span> 平移 · <span class="kbd">💎🏁👑</span> 放收集物 · <span class="kbd">⚡</span> 点线段设飞跃 · <span class="kbd">右键</span> 删点 · <span class="kbd">顶部条</span> 拖动定位 · <span class="kbd">相机模式</span> 放关键帧</div>
 </div>
 
 <script>
@@ -696,6 +696,12 @@ const Sim={
     if(!this.alive||this.autoplay)return false;
     if(T<0)return false;
     const cr=this.currentRoute||this.activeRoute;
+    // 飞跃段不能转弯
+    if(cr.gaps){
+      for(const g of cr.gaps){
+        if(T>g.startT&&T<g.endT)return false;
+      }
+    }
     this.playerTurns.push({t:T,w:cr.widths?.[this.playerTurns.length+1]||this.level.play.halfWidth});
     this._rebuildPlayer();
     return true;
@@ -975,8 +981,9 @@ const Renderer={
     }
     ctx.fillStyle=color;ctx.fill();
     // 2. 转角方形: 直角填充, 确保转角处无缝隙
+    //    飞跃段两端保留落脚点: 仅当两侧都是gap时才跳过
     for(let i=1;i<prefix.length-1;i++){
-      if(segInGap(i)||segInGap(i-1))continue;
+      if(segInGap(i)&&segInGap(i-1))continue;
       const p=scr[i];
       if(!this._visible(p[0],p[1],m))continue;
       const w=(widths[i]||Config.defaultHalfWidth)*z;
@@ -990,6 +997,23 @@ const Renderer={
         const w=(widths[0]||Config.defaultHalfWidth)*z;
         ctx.fillStyle=color;
         ctx.fillRect(p0[0]-w,p0[1]-w,w*2,w*2);
+      }
+    }
+    // 4. 飞跃段两端落脚点: 确保gap起止节点有实路径方块
+    if(gaps&&gaps.length&&nodeTimes){
+      for(const g of gaps){
+        for(let i=0;i<nodeTimes.length;i++){
+          if(Math.abs(nodeTimes[i]-g.startT)<0.05||Math.abs(nodeTimes[i]-g.endT)<0.05){
+            if(i<scr.length){
+              const p=scr[i];
+              if(this._visible(p[0],p[1],m)){
+                const w=(widths[i]||Config.defaultHalfWidth)*z;
+                ctx.fillStyle=color;
+                ctx.fillRect(p[0]-w,p[1]-w,w*2,w*2);
+              }
+            }
+          }
+        }
       }
     }
     if(glow){
@@ -1775,21 +1799,38 @@ const Editor={
   _addGap(e){
     const r=this._activeRoute();if(!r)return;
     if(!r.gaps)r.gaps=[];
-    const T=this._worldToPathT(e);
-    if(this._gapStartT===null){
-      this._gapStartT=T;
-      toast('⚡ 间隙起点 @ '+T.toFixed(2)+'s, 再点击设置终点');
-    }else{
-      const startT=Math.min(this._gapStartT,T);
-      const endT=Math.max(this._gapStartT,T);
-      if(endT-startT<0.2){toast('间隙太短, 至少0.2秒');this._gapStartT=null;return;}
-      r.gaps.push({startT:+startT.toFixed(3),endT:+endT.toFixed(3)});
-      r.gaps.sort((a,b)=>a.startT-b.startT);
+    const wp=this._stagePos(e);
+    const path=buildRoutePath(r,this.level.play.speed,this.level.audio.leadInSec);
+    // 投影到最近线段(每段天然是直线)
+    let bi=-1,bd=Infinity;
+    for(let i=0;i<path.prefix.length-1;i++){
+      const p0=path.prefix[i],p1=path.prefix[i+1];
+      const dx=p1[0]-p0[0],dy=p1[1]-p0[1],len2=dx*dx+dy*dy;
+      if(len2<1e-6)continue;
+      let t=((wp[0]-p0[0])*dx+(wp[1]-p0[1])*dy)/len2;
+      t=clamp(t,0,1);
+      const px=p0[0]+dx*t,py=p0[1]+dy*t;
+      const d=Math.hypot(wp[0]-px,wp[1]-py);
+      if(d<bd){bd=d;bi=i;}
+    }
+    if(bi<0){toast('未找到可用线段');return;}
+    const startT=+path.nodeTimes[bi].toFixed(3);
+    const endT=+path.nodeTimes[bi+1].toFixed(3);
+    if(endT<=startT){toast('无效线段');return;}
+    // 已存在则移除(切换)
+    const exists=r.gaps.findIndex(g=>Math.abs(g.startT-startT)<0.05&&Math.abs(g.endT-endT)<0.05);
+    if(exists>=0){
+      r.gaps.splice(exists,1);
       Schema._validateRoute(r,0,this.level.play);
       Sim.reset(this.level,true,this.activeRouteId);this._markDirty();
-      toast('⚡ 间隙 '+startT.toFixed(1)+'s→'+endT.toFixed(1)+'s');
-      this._gapStartT=null;
+      toast('已移除飞跃段');
+      return;
     }
+    r.gaps.push({startT,endT});
+    r.gaps.sort((a,b)=>a.startT-b.startT);
+    Schema._validateRoute(r,0,this.level.play);
+    Sim.reset(this.level,true,this.activeRouteId);this._markDirty();
+    toast('⚡ 飞跃段 '+startT.toFixed(1)+'s→'+endT.toFixed(1)+'s (再点同段移除)');
   },
   _worldToPathT(e){
     const wp=this._stagePos(e);
@@ -1871,8 +1912,10 @@ const Editor={
     this.tlCanvas.addEventListener('contextmenu',(e)=>{e.preventDefault();this._onTlDelete(e);});
   },
   _stagePos(e){const r=document.getElementById('stage').getBoundingClientRect();
-    const x=e.clientX-r.left,y=e.clientY-r.top;const z=this.cam.zoom;
-    return[(x-Renderer.W/2)/z+this.cam.x,(y-Renderer.H/2)/z+this.cam.y];},
+    const x=e.clientX-r.left,y=e.clientY-r.top;const z=this.cam.zoom,rot=this.cam.rotation||0;
+    if(Math.abs(rot)<0.001)return[(x-Renderer.W/2)/z+this.cam.x,(y-Renderer.H/2)/z+this.cam.y];
+    const dx=x-Renderer.W/2,dy=y-Renderer.H/2,cr=Math.cos(rot),sr=Math.sin(rot);
+    return[(dx*cr+dy*sr)/z+this.cam.x,(-dx*sr+dy*cr)/z+this.cam.y];},
   _tlX(e){const r=this.tlCanvas.getBoundingClientRect();return e.clientX-r.left;},
   _tlY(e){const r=this.tlCanvas.getBoundingClientRect();return e.clientY-r.top;},
   _timeToX(t){const pad=20;return pad+t/(AudioEngine.duration||1)*(this.tlW-pad*2);},
@@ -1886,8 +1929,16 @@ const Editor={
   _onStageMove(e){
     if(!this.drag)return;
     if(this.drag.type==='pan'){
-      this.cam.x=this.drag.cx-(e.clientX-this.drag.x)/this.cam.zoom;
-      this.cam.y=this.drag.cy-(e.clientY-this.drag.y)/this.cam.zoom;
+      const z=this.cam.zoom,rot=this.cam.rotation||0;
+      const dsx=e.clientX-this.drag.x,dsy=e.clientY-this.drag.y;
+      if(Math.abs(rot)<0.001){
+        this.cam.x=this.drag.cx-dsx/z;
+        this.cam.y=this.drag.cy-dsy/z;
+      }else{
+        const cr=Math.cos(rot),sr=Math.sin(rot);
+        this.cam.x=this.drag.cx-(dsx*cr+dsy*sr)/z;
+        this.cam.y=this.drag.cy-(-dsx*sr+dsy*cr)/z;
+      }
     }
   },
   _onUp(e){this.drag=null;this.tlDrag=null;},
@@ -2042,7 +2093,7 @@ const Editor={
     this.diamondMode=false;this.checkpointMode=false;this.crownMode=false;this.gapMode=false;
     this._gapStartT=null;
     const modes={paver:'mode-paver',cam:'mode-cam',drag:'mode-drag',diamond:'mode-diamond',checkpoint:'mode-checkpoint',crown:'mode-crown',gap:'mode-gap'};
-    const labels={paver:'铺路模式',cam:'相机模式',drag:'拖动模式',diamond:'💎 钻石模式',checkpoint:'🏁 存档点模式',crown:'👑 皇冠模式',gap:'⚡ 间隙飞跃模式 (点击两次设定起止)'};
+    const labels={paver:'铺路模式',cam:'相机模式',drag:'拖动模式',diamond:'💎 钻石模式',checkpoint:'🏁 存档点模式',crown:'👑 皇冠模式',gap:'⚡ 飞跃段模式 (点击线段放置, 再点移除)'};
     if(mode==='paver')this.paverMode=true;
     else if(mode==='cam')this.camMode=true;
     else if(mode==='drag')this.dragMode=true;
